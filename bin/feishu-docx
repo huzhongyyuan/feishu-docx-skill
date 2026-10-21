@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Run feishu-cli with an isolated document application profile."""
+
+import argparse
+import getpass
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import sys
+import tempfile
+
+PROFILE = "feishu-docx"
+BLOCKED_FLAGS = {"--config", "--profile", "--bot-app-id", "--bot-app-secret",
+                 "--user-access-token"}
+
+
+class ConfigError(Exception):
+    pass
+
+
+def config_path():
+    return Path.home() / ".feishu-cli" / "profiles" / PROFILE / "config.yaml"
+
+
+def read_config(path):
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ConfigError("配置必须是当前用户拥有的普通文件，不接受符号链接。")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise ConfigError("配置权限过宽，请将配置文件权限设为 0600。")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ConfigError("尚未配置文档应用，请运行 feishu-docx setup。") from None
+    except (OSError, ValueError):
+        raise ConfigError("无法读取配置；请使用 feishu-docx setup 生成 JSON 格式配置。") from None
+    if not isinstance(data, dict) or any(
+        not isinstance(data.get(key), str) or not data[key].strip()
+        for key in ("app_id", "app_secret")
+    ):
+        raise ConfigError("配置缺少有效的 app_id 或 app_secret。")
+    return data
+
+
+def setup(args):
+    parser = argparse.ArgumentParser(description="配置独立的飞书文档应用；不调用飞书 API。")
+    parser.add_argument("--app-id", help="飞书自建应用的 App ID")
+    parser.add_argument("--secret-stdin", action="store_true", help="从标准输入读取 Secret")
+    parser.add_argument("--replace", action="store_true", help="明确替换已有配置")
+    opts = parser.parse_args(args)
+    path = config_path()
+    if path.exists() or path.is_symlink():
+        if not opts.replace:
+            raise ConfigError("配置已存在；核对应用后使用 --replace 才会替换。")
+        if path.is_symlink():
+            raise ConfigError("拒绝替换符号链接配置。")
+    app_id = (opts.app_id or input("App ID: ")).strip()
+    secret = (sys.stdin.read() if opts.secret_stdin else getpass.getpass("App Secret: ")).strip()
+    if not app_id or not secret:
+        raise ConfigError("App ID 和 Secret 均不能为空；未写入配置。")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.parent.is_symlink() or path.parent.stat().st_uid != os.getuid():
+        raise ConfigError("配置目录必须属于当前用户且不能是符号链接。")
+    if stat.S_IMODE(path.parent.stat().st_mode) & 0o077:
+        raise ConfigError("配置目录权限过宽，请先将该目录权限设为 0700。")
+    payload = {"app_id": app_id, "app_secret": secret,
+               "base_url": "https://open.feishu.cn", "transfer_ownership": False}
+    fd, temp = tempfile.mkstemp(prefix=".config-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if opts.replace:
+            os.replace(temp, path)
+        else:
+            # A concurrent setup must not overwrite another writer's config.
+            try:
+                os.link(temp, path)
+            except FileExistsError:
+                raise ConfigError("配置已由另一进程创建；未覆盖。") from None
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    print(f"已保存独立应用配置：{path}（0600）。尚未验证飞书权限。")
+    return 0
+
+
+def launch(args):
+    if any(arg.split("=", 1)[0] in BLOCKED_FLAGS for arg in args):
+        raise ConfigError("feishu-docx 固定使用独立 profile；切换身份请直接使用 feishu-cli。")
+    offline = not args or args in (["--version"], ["-v"]) or args[0] == "help" or args[-1] in ("--help", "-h")
+    if not offline:
+        read_config(config_path())
+    configured = os.environ.get("FEISHU_DOCX_CLI", "feishu-cli")
+    binary = shutil.which(configured)
+    if not binary:
+        raise ConfigError("找不到 feishu-cli；请安装上游 CLI，或设置 FEISHU_DOCX_CLI 为可执行文件路径。")
+    if Path(binary).resolve() == Path(__file__).resolve():
+        raise ConfigError("FEISHU_DOCX_CLI 不能指向 feishu-docx 自身。")
+    # Viper supports arbitrary FEISHU_* overrides, including owner/base URL.
+    # Strip the entire namespace, while retaining PATH and network proxy settings.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("FEISHU_")}
+    argv = [binary, "--profile", PROFILE, "--config", str(config_path()), *args]
+    os.execve(binary, argv, env)
+
+
+def main(args=None):
+    args = list(sys.argv[1:] if args is None else args)
+    try:
+        if args and args[0] == "setup":
+            return setup(args[1:])
+        launch(args)
+        return 0
+    except (ConfigError, OSError) as exc:
+        print(f"feishu-docx: {exc}", file=sys.stderr)
+        return 2
+    except (EOFError, KeyboardInterrupt):
+        print("feishu-docx: 配置取消。", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
