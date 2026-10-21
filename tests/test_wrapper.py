@@ -172,6 +172,11 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stderr)
             command = prefix / "bin/feishu-docx"
             self.assertTrue(command.is_symlink())
+            self.assertTrue((prefix / "bin/feishu-publish").is_symlink())
+            self.assertTrue((codex / "feishu-publish/scripts/publish.py").is_file())
+            version = subprocess.run([sys.executable, str(prefix / "bin/feishu-publish"), "--version"], capture_output=True, text=True)
+            self.assertEqual(version.returncode, 0, version.stderr)
+            self.assertIn("0.2.0", version.stdout)
             self.assertTrue((codex / "feishu-docx/SKILL.md").is_file())
             self.assertTrue((claude / "feishu-docx/references/access.md").is_file())
             self.assertEqual(command.read_bytes(), (ROOT / "bin/feishu-docx").read_bytes())
@@ -180,6 +185,27 @@ class InstallTests(unittest.TestCase):
             self.assertNotEqual(second.returncode, 0)
             self.assertEqual(command.read_bytes(), before)
             self.assertFalse((base / ".feishu-cli").exists())
+
+    def test_upgrade_preserves_previous_files_and_refuses_foreign_links(self):
+        with tempfile.TemporaryDirectory() as temp:
+            prefix = Path(temp) / "local"
+            args = [sys.executable, str(ROOT / "scripts/install.py"), "--prefix", str(prefix)]
+            subprocess.run(args, check=True, capture_output=True)
+            package = prefix / "share/feishu-docx-skill"
+            (package / "local-note.txt").write_text("keep my edits")
+            result = subprocess.run(args + ["--upgrade"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            backups = list(package.parent.glob("feishu-docx-skill.backup-*"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual((backups[0] / "local-note.txt").read_text(), "keep my edits")
+            link = prefix / "bin/feishu-publish"
+            link.unlink()
+            link.write_text("another installation")
+            before = (package / "bin/feishu-publish").read_bytes()
+            result = subprocess.run(args + ["--upgrade"], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(link.read_text(), "another installation")
+            self.assertEqual((package / "bin/feishu-publish").read_bytes(), before)
 
     def test_existing_agent_skill_prevents_partial_install(self):
         with tempfile.TemporaryDirectory() as temp:

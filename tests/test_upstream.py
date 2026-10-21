@@ -28,6 +28,7 @@ class UpstreamContractTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
+        (self.directory / ".feishu-cli/profiles/feishu-docx").mkdir(parents=True)
         self.config = self.directory / "dedicated.json"
         self.config.write_text(json.dumps({"app_id": "example-dedicated-app",
                                           "app_secret": "example-not-a-real-secret",
@@ -40,7 +41,8 @@ class UpstreamContractTests(unittest.TestCase):
         }))
 
     def run_cli(self, *args, extra_env=None):
-        env = dict(os.environ, FEISHU_DOCX_CLI=CLI)
+        # Isolate the child process home; never inspect the real account profiles.
+        env = dict(os.environ, FEISHU_DOCX_CLI=CLI, HOME=str(self.directory))
         env.update(extra_env or {})
         return subprocess.run([sys.executable, "-c", RUNNER, str(ROOT / "bin/feishu-docx"),
                                str(self.config), *args], cwd=self.directory, env=env,

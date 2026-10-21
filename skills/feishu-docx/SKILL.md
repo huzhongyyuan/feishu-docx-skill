@@ -1,9 +1,13 @@
 ---
 name: feishu-docx
-description: 从本机或远程服务器读取、创建和更新飞书文档，导入 Markdown 并插入图片或视频附件。使用独立的 feishu-docx 应用 profile；适用于实验报告、工作日记、周报和已有飞书文档修改，不用于飞书消息机器人或远程会话控制。
+description: 使用独立 feishu-docx 应用 profile 读取和局部更新已有飞书文档、插入图片或视频附件。用于明确需要应用身份或已有文档编辑的任务；用户身份发布新文档优先使用同仓库的 feishu-publish。
 ---
 
 # 飞书文档
+
+新建用户归属的文档优先用完整安装自带的 `feishu-publish publish /path/report.md`，
+其提供用户授权、去重和持久发布记录；本入口保留原有应用 profile 的读写及局部编辑能力。
+本入口不提供发布去重，也不承诺用户授权失效时严格停止；需要固定用户身份时使用新发布入口。
 
 使用 `~/.local/bin/feishu-docx`；自定义安装时使用实际路径。该命令封装
 `feishu-cli`，固定使用 `feishu-docx` profile，不继承其他应用的 `FEISHU_*` 环境变量。
